@@ -301,11 +301,6 @@ double AnchorAligner::AlignEdges(const char *query, const char *ref, int leftRef
 	const char* ref_sub = ref_cut.c_str();
 	const char* read_sub = read_cut.c_str();
 
-//		std::cout << "ref: " << ref_sub << std::endl;
-//		std::cout << "read: " << read_sub << std::endl;
-//
-//		std::cout << "start_position_ref " << start_position_ref << std::endl;
-//		std::cout << "number_of_bases " << start_position_ref+number_of_bases << std::endl;
 
 	aligner_->Global(read_sub, read_cut.size(), ref_sub, ref_cut.size(), 1);
 	auto aln_result_sub = aligner_->getResults();
@@ -959,7 +954,6 @@ std::shared_ptr<AlignmentResult> AnchorAligner::GlobalAnchored(int64_t abs_ref_i
 		  std::string ref_String;
 
 		  for(int64_t i = anchors.front().rstart-window; i < anchors.front().rstart; i++) {
-//			  std::cout << "i " << i << std::endl;
 			  ref_String.insert(0, 1, ref[i]);
 		  }
 

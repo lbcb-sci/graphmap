@@ -36,7 +36,7 @@ void GraphMap::Run(ProgramParameters& parameters) {
   clock_t last_time = time_start;
 
   if (parameters.composite_parameters == "rnaseq") {
-	  parameters.output_in_original_order = true;
+//	  parameters.output_in_original_order = true;
 	  parameters.batch_size_in_mb = -1;
   }
 
@@ -127,15 +127,17 @@ void GraphMap::Run(ProgramParameters& parameters) {
     LogSystem::GetInstance().Error(SEVERITY_INT_WARNING, __FUNCTION__, LogSystem::GetInstance().GenerateErrorMessage(ERR_WRONG_FILE_TYPE, "Unknown output format specified: '%s'. Defaulting to SAM output.", parameters.outfmt.c_str()));
   }
 
+  std::string working_addon = ".tmp.sam";
 
   // Processing reads.
   // Reads can either be processed from a single file, or they can be processed from several files in a given folder.
   if (parameters.process_reads_from_folder == false) {    // This part processes a single given input file.
     last_time = clock();
-    FILE *fp_out = OpenOutSAMFile_(parameters.out_sam_path); // Checks if the output SAM file is specified. If it is not, then output to STDOUT.
+    FILE *fp_total_out = OpenOutSAMFile_(parameters.out_sam_path);
+    FILE *fp_out = OpenOutSAMFile_(parameters.out_sam_path + working_addon); // Checks if the output SAM file is specified. If it is not, then output to STDOUT.
 
     // Do the actual work.
-    ProcessReadsFromSingleFile(parameters, fp_out);
+    ProcessReadsFromSingleFile(parameters, fp_out, fp_total_out);
     LogSystem::GetInstance().Log(VERBOSE_LEVEL_ALL, true, FormatString("\n"), "[]");
     LogSystem::GetInstance().Log(VERBOSE_LEVEL_ALL, true, FormatString("All reads processed in %.2f sec (or %.2f CPU min).\n", (((float) (clock() - last_time))/CLOCKS_PER_SEC), ((((float) (clock() - last_time))/CLOCKS_PER_SEC) / 60.0f)), "ProcessReads");
 
@@ -159,11 +161,12 @@ void GraphMap::Run(ProgramParameters& parameters) {
           last_time = clock();
           parameters.reads_path = parameters.reads_folder + "/" + read_files.at(i);
           parameters.out_sam_path = parameters.output_folder + "/graphmap-" + sam_files.at(i);
-          FILE *fp_out = OpenOutSAMFile_(parameters.out_sam_path); // Checks if the output SAM file is specified. If it is not, then output to STDOUT.
+          FILE *fp_out = OpenOutSAMFile_(parameters.out_sam_path + working_addon); // Checks if the output SAM file is specified. If it is not, then output to STDOUT.
+          FILE *fp_total_out = OpenOutSAMFile_(parameters.out_sam_path);
 
           // Do the actual work.
           LogSystem::GetInstance().Log(VERBOSE_LEVEL_ALL, true, FormatString("Starting to process read file %ld/%ld ('%s').\n", (i + 1), read_files.size(), parameters.reads_path.c_str()), "ProcessReads");
-          ProcessReadsFromSingleFile(parameters, fp_out);
+          ProcessReadsFromSingleFile(parameters, fp_out, fp_total_out);
           LogSystem::GetInstance().Log(VERBOSE_LEVEL_ALL, true, FormatString("Finished processing read file %ld/%ld ('%s').\n\n", (i + 1), read_files.size(), parameters.reads_path.c_str()), "ProcessReads");
 
           if (fp_out != stdout)
@@ -276,7 +279,158 @@ int GraphMap::BuildIndexes(ProgramParameters &parameters) {
   return 0;
 }
 
-void GraphMap::ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *fp_out) {
+void GraphMap::ReadRealStructs(SequenceFile &sams, std::vector<RealignmentStructure> &real_structs, ProgramParameters &parameters) {
+	  sams.OpenFileForBatchLoading(parameters.sams_path);
+	  sams.LoadAllAsBatch(SeqFmtToString(parameters.infmt), false);
+
+	  int number_of_sequences = sams.get_sequences().size();
+
+	  for(int i = 0; i < number_of_sequences; i++) {
+		  SingleSequence *sam_line = sams.get_sequences()[i];
+		  SequenceAlignment seq_aln = sam_line->get_aln();
+		  std::vector<CigarOp> cigar_string = seq_aln.get_cigar();
+		  std::vector<CigarExon> cigar_exons;
+
+		  int64_t read_start = 0;
+		  int64_t read_stop = 0;
+		  int64_t ref_start = 0;
+		  int64_t ref_stop = 0;
+		  int64_t ref_start_raw = 0;
+		  int64_t ref_stop_raw = 0;
+
+		  int64_t reference_start = seq_aln.get_pos();
+
+	      int ref_len = 0;
+	      int read_len = 0;
+	      int is_first = 1;
+	      int start_clipping = 0;
+	      int end_clipping = 0;
+
+	      std::vector<CigarOp> exon;
+
+	      for (int i = 0; i < cigar_string.size(); i++) {
+	    	  	  CigarOp cOp = cigar_string[i];
+	    	  	  if(cOp.op == 'N') {
+	    	  		  cigar_exons.push_back(CigarExon(exon, false));
+	    		      std::vector<CigarOp> gap;
+	    		      gap.push_back(cOp);
+	    	  		  cigar_exons.push_back(CigarExon(gap, true));
+	    	  		  exon.clear();
+	    	  		  ref_len += cOp.count;
+	    	  	  } else {
+	    	  		  if(cOp.op == '=' || cOp.op == 'X') {
+	    	  			  ref_len += cOp.count;
+	    	  			  read_len += cOp.count;
+	    	  		  } else if (cOp.op == 'D') {
+	    	  			  ref_len += cOp.count;
+	    	  		  } else if (cOp.op == 'I') {
+	    	  			  read_len += cOp.count;
+	    	  		  } else if (cOp.op == 'M') {
+	    	  			  ref_len += cOp.count;
+	    	  			  read_len += cOp.count;
+	    	  			  cOp.op = '=';
+	    	  		  }
+	    	  		  exon.push_back(cOp);
+	    	  	  }
+
+			  if(cOp.op == 'S') {
+				  if (is_first == 1) {
+					  start_clipping = cOp.count;
+				  } else {
+					  end_clipping = cOp.count;
+				  }
+			  }
+			  is_first = 0;
+	      }
+
+  		  cigar_exons.push_back(CigarExon(exon, false));
+
+		  int order_number = i;
+		  std::shared_ptr<is::MinimizerIndex> first_index = indexes_[0];
+
+		  std::string chrom_name = seq_aln.get_rname();
+
+		  int64_t ref_number = 0;
+		  uint32_t flag = seq_aln.get_flag();
+
+		  SeqOrientation orientation = flag == 0 ? kForward : kReverse;
+		  bool isAligned = flag == 0 || flag == 16;
+
+		  if(!isAligned) {
+			  continue;
+		  }
+
+	      int64_t total_ref_len = 0;
+	      int64_t total_len = 0;
+
+		  for(int64_t i = 0; i < first_index->get_reference_lengths().size()/2; i++) {
+			  total_len += first_index->get_reference_lengths()[i];
+		  }
+
+		  for(int64_t i = 0; i < first_index->get_headers().size(); i++) {
+			  std::string header_name = first_index->get_headers()[i];
+			  int64_t chrom_len = first_index->get_reference_lengths()[i];
+
+			  if (header_name == chrom_name) {
+
+				  ref_number = i;
+				  ref_start_raw += total_ref_len;
+
+				  if (orientation == kReverse) {
+					  ref_start_raw += total_len;
+					  ref_start_raw += (chrom_len - (reference_start + ref_len));
+				  } else {
+					  ref_start_raw += reference_start;
+				  }
+				  break;
+			  } else {
+				  total_ref_len += chrom_len;
+			  }
+		  }
+
+		  read_start = start_clipping;
+		  read_stop = start_clipping + read_len - 1;
+
+	      ref_start = reference_start;
+	      ref_stop = reference_start + ref_len;
+
+	      ref_stop_raw = ref_start_raw + ref_len;
+
+	      if (orientation == kReverse) {
+	    	  	  ref_start_raw += 1;
+	    	  	  ref_stop_raw += 1;
+	      } else {
+	    	  	  ref_start_raw -= 1;
+	    	  	  ref_stop_raw -= 1;
+	      }
+
+	      ref_start -= 1;
+	      ref_stop -= 1;
+
+		  std::vector<CigarExon> cigar_exons_worked;
+
+		  if(orientation == kReverse) {
+		      for(int k = cigar_exons.size() - 1; k >= 0; k--) {
+		    	  	CigarExon ce = cigar_exons[k];
+
+		    	  	std::vector<is::CigarOp> exon;
+
+		    	  	for(int l = ce.cigar.size() - 1; l >= 0; l--) {
+		    	  		exon.push_back(ce.cigar[l]);
+		    	  	}
+
+		    	  	CigarExon ce2 = CigarExon(exon, ce.isGap);
+		    	  	cigar_exons_worked.push_back(ce2);
+		      }
+		  } else {
+			  cigar_exons_worked = cigar_exons;
+		  }
+	      RealignmentStructure rs = RealignmentStructure(order_number, sam_line, ref_number, cigar_exons_worked, orientation, ref_start, ref_stop, ref_start_raw, ref_stop_raw, read_start, read_stop, isAligned);
+	      real_structs.emplace_back(rs);
+	  }
+}
+
+void GraphMap::ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *fp_out, FILE *fp_total_out) {
   // Write out the SAM header in fp_out.
   if (parameters.outfmt == "sam") {
     std::string sam_header;
@@ -288,6 +442,7 @@ void GraphMap::ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *f
 
     if (sam_header.size() > 0)
       fprintf (fp_out, "%s\n", sam_header.c_str());
+    	  fprintf (fp_total_out, "%s\n", sam_header.c_str());
   }
 
   // Check whether to load in batches or to load all the data at once.
@@ -300,7 +455,7 @@ void GraphMap::ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *f
   SequenceFile reads;
   reads.OpenFileForBatchLoading(parameters.reads_path);
 
-  if (parameters.composite_parameters == "rnaseq") {
+  if (parameters.composite_parameters == "rnaseq" || parameters.composite_parameters == "consensus") {
 	  reads.translateUtoT = true;
   }
 
@@ -309,6 +464,43 @@ void GraphMap::ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *f
 
   int64_t num_mapped = 0;
   int64_t num_unmapped = 0;
+
+  std::vector<RealignmentStructure> real_structs;
+  SequenceFile sams;
+  sams.should_store_sam_lines = true;
+
+  if(parameters.composite_parameters == "consensus") {
+
+	  ReadRealStructs(sams, real_structs, parameters);
+
+	  int64_t num_threads = (int64_t) parameters.num_threads;
+
+	  EValueParams *evalue_params;
+	  SetupScorer((char *) "EDNA_FULL_5_4", indexes_[0]->get_data_length_forward(), -parameters.evalue_gap_open, -parameters.evalue_gap_extend, &evalue_params);
+
+	  std::vector<std::string> tmp_sam_lines;
+
+	  for(int i = 0; i < sams.sam_lines.size(); i++) {
+		  tmp_sam_lines.push_back(sams.sam_lines[i]);
+	  }
+
+	  PostprocessRNAData(real_structs, &tmp_sam_lines, num_threads, &parameters, evalue_params, fp_total_out);
+
+	  if (evalue_params) {
+	    DeleteEValueParams(evalue_params);
+	  }
+
+	  for (int64_t i = 0; i < tmp_sam_lines.size(); i++) {
+		  if (tmp_sam_lines[i].size() > 0) {
+			  fprintf (fp_total_out, "%s\n", tmp_sam_lines[i].c_str());
+		  }
+	  }
+
+	  reads.CloseFileAfterBatchLoading();
+	  sams.CloseFileAfterBatchLoading();
+
+	  return;
+  }
 
   // Load sequences in batch (if requested), or all at once.
   while ((parameters.batch_size_in_mb <= 0 && !reads.LoadAllAsBatch(SeqFmtToString(parameters.infmt), false)) || (parameters.batch_size_in_mb > 0 && !reads.LoadNextBatchInMegabytes(SeqFmtToString(parameters.infmt), parameters.batch_size_in_mb, false))) {
@@ -322,7 +514,7 @@ void GraphMap::ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *f
     }
 
     // This line actually does all the work.
-    ProcessSequenceFileInParallel(&parameters, &reads, &absolute_time, fp_out, &num_mapped, &num_unmapped);
+    ProcessSequenceFileInParallel(&parameters, &reads, &absolute_time, fp_out, fp_total_out, &num_mapped, &num_unmapped);
 
     if (parameters.batch_size_in_mb > 0) {
       LogSystem::GetInstance().Log(VERBOSE_LEVEL_ALL, true, FormatString("\n"), "[]");
@@ -336,7 +528,7 @@ void GraphMap::ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *f
   reads.CloseFileAfterBatchLoading();
 }
 
-bool GraphMap::comparePtrToNode(RealignmentStructure* a, RealignmentStructure* b) { return ((*a).start < (*b).start); }
+bool GraphMap::comparePtrToNode(RealignmentStructure a, RealignmentStructure b) { return ((a).start < (b).start); }
 
 int get_read_for_reference_begining(std::vector<is::CigarOp> cigar, int len) {
 	int reference_covered = 0;
@@ -474,7 +666,6 @@ std::vector<is::CigarOp> GraphMap::ProcessReadExons(std::vector<ExonInfo> &exons
 				std::string total_read = read + current_exon.content.substr(0, current_exon.content.size()-back_clipping);
 
 				did_adjust_read = true;
-
 
 				aligner->Global(total_read.c_str(), total_read.size(), ref.c_str(), ref.size(), true);
 				auto aln_result = aligner->getResults();
@@ -798,7 +989,7 @@ void FindEquivavlencyClasses(std::vector<std::vector<int> >* classes, std::vecto
 	}
 }
 
-void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignment_structures, std::vector<std::string> *sam_lines, int64_t num_threads, ProgramParameters *parameters, EValueParams *evalue_params) {
+void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure> realignment_structures, std::vector<std::string> *sam_lines, int64_t num_threads, ProgramParameters *parameters, EValueParams *evalue_params, FILE *fp_total_out) {
 	std::shared_ptr<is::MinimizerIndex> first_index = indexes_[0];
 	std::vector<int64_t*> coverages_array;
 
@@ -816,19 +1007,19 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 	}
 
 	std::vector<std::string> ref_names;
-	std::vector<std::vector<RealignmentStructure*>> reads_by_chromosome;
+	std::vector<std::vector<RealignmentStructure>> reads_by_chromosome;
 
 	for (int i = 0; i < number_of_refs; ++i) {
 	  std::string ref_name = indexes_.front()->get_headers()[i];
 	  ref_names.push_back(ref_name);
-	  std::vector<RealignmentStructure *> vector;
+	  std::vector<RealignmentStructure> vector;
 	  reads_by_chromosome.push_back(vector);
 	}
 
 	for (int var = 0; var < realignment_structures.size(); ++var) {
-	  RealignmentStructure *rs = realignment_structures[var];
-	  if (rs->ref_number >= 0) {
-		  reads_by_chromosome[rs->ref_number].push_back(rs);
+	  RealignmentStructure rs = realignment_structures[var];
+	  if (rs.ref_number >= 0) {
+		  reads_by_chromosome[rs.ref_number].push_back(rs);
 	  }
 	}
 
@@ -836,11 +1027,11 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 	  std::sort(reads_by_chromosome[var].begin(), reads_by_chromosome[var].end(), GraphMap::comparePtrToNode);
 	}
 
-	std::vector<std::vector<RealignmentStructure *>> realignment_clusters;
-	std::vector<RealignmentStructure *> current_realignment_cluster;
+	std::vector<std::vector<RealignmentStructure>> realignment_clusters;
+	std::vector<RealignmentStructure> current_realignment_cluster;
 
 	for (int var = 0; var < reads_by_chromosome.size(); ++var) {
-		std::vector<RealignmentStructure *> current_realignment_chromosome = reads_by_chromosome[var];
+		std::vector<RealignmentStructure> current_realignment_chromosome = reads_by_chromosome[var];
 
 		if (current_realignment_chromosome.size() <= 0) {
 			continue;
@@ -852,15 +1043,15 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 		int next_structure_index = 1;
 
 		while(next_structure_index < current_realignment_chromosome.size()) {
-		  RealignmentStructure* current_structure = current_realignment_chromosome[current_structure_index];
-		  RealignmentStructure* next_structure = current_realignment_chromosome[next_structure_index];
+		  RealignmentStructure current_structure = current_realignment_chromosome[current_structure_index];
+		  RealignmentStructure next_structure = current_realignment_chromosome[next_structure_index];
 
 		  if (next_structure_index == current_structure_index) {
 			  realignment_clusters.push_back(current_realignment_cluster);
 			  current_realignment_cluster.clear();
 			  current_realignment_cluster.push_back(current_structure);
 			  next_structure_index += 1;
-		  } else if (current_structure->stop < next_structure->start) {
+		  } else if (current_structure.stop < next_structure.start) {
 			  current_structure_index += 1;
 		  } else {
 			  current_realignment_cluster.push_back(next_structure);
@@ -871,15 +1062,13 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 		current_realignment_cluster.clear();
 	}
 
-	 std::cout << "Number of alignment clusters to process: " << realignment_clusters.size() << std::endl;
+	std::cout << "Number of alignment clusters to process: " << realignment_clusters.size() << std::endl;
 
 	#pragma omp parallel for num_threads(num_threads) firstprivate(evalue_params) shared(parameters, sam_lines) schedule(dynamic, 1)
 	for (int var = 0; var < realignment_clusters.size(); ++var) {
-	  std::vector<RealignmentStructure *> current_realignment_cluster = realignment_clusters[var];
+	  std::vector<RealignmentStructure> current_realignment_cluster = realignment_clusters[var];
 
 	  std::cout << "Postprocessing alingments cluster number " << var << " / " << realignment_clusters.size() << std::endl;
-
-//	  std::vector<RealignmentStructure *> current_realignment_cluster2 = realignment_clusters[1];
 
 	  uint32_t thread_id = omp_get_thread_num();
 
@@ -894,26 +1083,26 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 	  }
 
 	  for (int j = 0; j < current_realignment_cluster.size(); ++j) {
-		RealignmentStructure* rs = current_realignment_cluster[j];
+		RealignmentStructure rs = current_realignment_cluster[j];
 
-		if(rs->ref_number < 0) {
+		if(rs.ref_number < 0) {
 		 continue;
 		}
 
-		ref_number = rs->ref_number;
+		ref_number = rs.ref_number;
 
-		int64_t ref_data_len = first_index->get_reference_lengths()[rs->ref_number];
+		int64_t ref_data_len = first_index->get_reference_lengths()[rs.ref_number];
 		int8_t *ref_data_int  = (int8_t *) &first_index->get_data()[0];
 		const char *ref_data = (const char *) ref_data_int;
 
 		int len_total = 0;
 
-		if (rs->start < min_index) {
-			min_index = std::max((int64_t) 0, rs->start);
+		if (rs.start < min_index) {
+			min_index = std::max((int64_t) 0, rs.start);
 		}
 
-		if (rs->stop > max_index) {
-			max_index = std::min(rs->stop, ref_data_len);
+		if (rs.stop > max_index) {
+			max_index = std::min(rs.stop, ref_data_len);
 		}
 	  }
 
@@ -928,17 +1117,17 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 
 	  for (int i = 0; i < current_realignment_cluster.size(); ++i) {
 
-		RealignmentStructure* realignment_structure = current_realignment_cluster[i];
-		const SingleSequence *read = realignment_structure->sequence;
+		RealignmentStructure realignment_structure = current_realignment_cluster[i];
 
-		double old_score = realignment_structure->score;
+		const SingleSequence *read = realignment_structure.sequence;
 
-		SeqOrientation orientation = realignment_structure->orientation;
+		SeqOrientation orientation = realignment_structure.orientation;
 		std::string sam_line_realigned = "";
 		auto mapping_data_realing = std::unique_ptr<MappingData>(new MappingData);
 
 		double score = -10000;
 		SingleSequence *ss = new SingleSequence();
+
 		ss->CopyFrom(*read);
 
 		std::vector<CigarExon> new_cigar_exons;
@@ -953,17 +1142,22 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 		std::vector<CigarExon> previousCigarExons;
 
 		if (orientation == kReverse) {
-			for(int i = realignment_structure->previousCigarExons.size()-1; i >= 0; i--) {
-				CigarExon ce = realignment_structure->previousCigarExons[i];
+			for(int i = realignment_structure.previousCigarExons.size()-1; i >= 0; i--) {
+				CigarExon ce = realignment_structure.previousCigarExons[i];
 
 				std::reverse(ce.cigar.begin(), ce.cigar.end());
 
 				previousCigarExons.push_back(ce);
 			}
-			ss->ReverseComplement();
+
+			if (parameters->composite_parameters != "consensus") {
+				ss->ReverseComplement();
+			}
+
 			read_string = (const char*) ss->get_data();
+
 		} else {
-			for(CigarExon &ce: realignment_structure->previousCigarExons) {
+			for(CigarExon &ce: realignment_structure.previousCigarExons) {
 				previousCigarExons.push_back(ce);
 			}
 		}
@@ -991,10 +1185,10 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 				}
 
 				order_number += 1;
-				int64_t location = realignment_structure->raw_start;
+				int64_t location = realignment_structure.raw_start;
 
 				if(location > halvening) {
-					location = realignment_structure->raw_stop;
+					location = realignment_structure.raw_stop;
 					int64_t buffer_offset = 0;
 					int64_t desired_index = 0;
 					bool found_index = false;
@@ -1034,7 +1228,9 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 				}
 			}
 		}
+
 		exons[exons.size()-1].isEndExon = true;
+
 		delete ss;
 	  }
 
@@ -1070,9 +1266,6 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 	  std::vector<std::vector<ExonInfo>> clusters_of_exons;
 	  for(std::vector<ExonInfo> &cluster_of_exons: clusters_of_exons_mid) {
 
-//		  if(cluster_of_exons.size() > 4000) {
-//			  continue;
-//		  }
 		  std::vector<std::vector<int>> equivalency_matrix;
 
 		  for(int64_t i = 0; i < cluster_of_exons.size(); i++) {
@@ -1206,29 +1399,35 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 	  }
 
 	  for (auto x : map_of_exons) {
+
 		 std::vector<ExonInfo> modified_exons = set_exon_offsets(x.second, ref_data);
+
 		 std::vector<is::CigarOp> rez = ProcessReadExons(modified_exons, ref_data);
+
 		 if (rez.size() > 0 && x.second.size() > 0) {
 
 			  for (int i = 0; i < current_realignment_cluster.size(); ++i) {
-				  RealignmentStructure* realignment_structure = current_realignment_cluster[i];
+				  RealignmentStructure realignment_structure = current_realignment_cluster[i];
 
-				  if (realignment_structure->sequence->get_header() == x.second[0].read_id) {
+				  if (realignment_structure.sequence->get_header() == x.second[0].read_id) {
 
 					  std::string sam_line_test = "";
 
 					  auto mapping_data_test = std::unique_ptr<MappingData>(new MappingData);
 
 					  SingleSequence *ss = new SingleSequence();
-					  ss->CopyFrom(*realignment_structure->sequence);
-					  ss->ReverseComplement();
+					  ss->CopyFrom(*realignment_structure.sequence);
+
+					  if (parameters->composite_parameters != "consensus") {
+						  ss->ReverseComplement();
+					  }
 
 					  bool is_aligned = GetMappingData(realignment_structure, indexes_[0], &(*mapping_data_test), parameters, rez, ss);
 
-					  CollectAlignments(realignment_structure->sequence, parameters, &(*mapping_data_test), sam_line_test);
+					  CollectAlignments(realignment_structure.sequence, parameters, &(*mapping_data_test), sam_line_test);
 
 					  if (is_aligned) {
-						  (*sam_lines)	[realignment_structure->order_number] = sam_line_test;
+						  (*sam_lines)	[realignment_structure.order_number] = sam_line_test;
 					  } else {
 					  }
 
@@ -1248,13 +1447,13 @@ void GraphMap::PostprocessRNAData(std::vector<RealignmentStructure *> realignmen
 	std::cout << "End." << std::endl;
 }
 
-int GraphMap::ProcessSequenceFileInParallel(ProgramParameters *parameters, const SequenceFile *reads, clock_t *last_time, FILE *fp_out, int64_t *ret_num_mapped, int64_t *ret_num_unmapped) {
+int GraphMap::ProcessSequenceFileInParallel(ProgramParameters *parameters, const SequenceFile *reads, clock_t *last_time, FILE *fp_out, FILE *fp_total_out, int64_t *ret_num_mapped, int64_t *ret_num_unmapped) {
   int64_t num_reads = reads->get_sequences().size();
   std::vector<std::string> sam_lines;
 
-  if (parameters->output_in_original_order == true) {
+//  if (parameters->output_in_original_order == true) {
     sam_lines.resize(num_reads, std::string(""));
-  }
+//  }
 
   // Division by to to avoid hyperthreading cores, and limit on 24 to avoid clogging a shared SMP.
 //  int64_t num_threads = std::min(24, ((int) omp_get_num_procs()) / 2);
@@ -1289,7 +1488,7 @@ int GraphMap::ProcessSequenceFileInParallel(ProgramParameters *parameters, const
   int64_t num_mapped=0, num_unmapped=0, num_ambiguous=0, num_errors=0;
   int64_t num_reads_processed_in_thread_0 = 0;
 
-  std::vector<RealignmentStructure *> realignment_structures;
+  std::vector<RealignmentStructure> realignment_structures;
 
   EValueParams *evalue_params;
   SetupScorer((char *) "EDNA_FULL_5_4", indexes_[0]->get_data_length_forward(), -parameters->evalue_gap_open, -parameters->evalue_gap_extend, &evalue_params);
@@ -1361,6 +1560,8 @@ int GraphMap::ProcessSequenceFileInParallel(ProgramParameters *parameters, const
         #pragma omp critical
         fprintf (fp_out, "%s\n", sam_line.c_str());
       }
+	  #pragma omp critical
+      sam_lines[i] = sam_line;
     }
     else {
       #pragma omp critical
@@ -1369,7 +1570,7 @@ int GraphMap::ProcessSequenceFileInParallel(ProgramParameters *parameters, const
   }
 
   if (parameters->composite_parameters == "rnaseq") {
-	  PostprocessRNAData(realignment_structures, &sam_lines, num_threads, parameters, evalue_params);
+	  PostprocessRNAData(realignment_structures, &sam_lines, num_threads, parameters, evalue_params, fp_total_out);
   }
 
   (*ret_num_mapped) = num_mapped;
@@ -1389,13 +1590,13 @@ int GraphMap::ProcessSequenceFileInParallel(ProgramParameters *parameters, const
   LogSystem::GetInstance().Log(VERBOSE_LEVEL_ALL, true, "\n", "[]");
 
   // Output the results to the SAM file in the exact ordering of the input file (if it was requested by the specified parameter).
-  if (parameters->output_in_original_order == true) {
+//  if (parameters->output_in_original_order == true) {
     for (int64_t i=0; i<num_reads; i++) {
       if (sam_lines[i].size() > 0) {
-        fprintf (fp_out, "%s\n", sam_lines[i].c_str());
+        fprintf (fp_total_out, "%s\n", sam_lines[i].c_str());
       }
     }
-  }
+//  }
 
   return 0;
 }

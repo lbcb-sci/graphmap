@@ -50,6 +50,7 @@ struct ProgramParameters {
   std::string reference_path = "";          // 'r', The path to the reference file.
   std::string index_file = "";    // 'i', The path to the reference file's index. If it does not exist, index will be created in this path.
   std::string reads_path = "";              // 'd', The path to the reads file, in FASTA or FASTQ format.
+  std::string sams_path = "";
   std::string out_sam_path = "";            // 'o', The output path. If left blank, all sam output will be placed to stdout.
   int64_t verbose_sam_output = 0;           // 'b', Helpful debug comments can be placed in SAM output lines (at the end), however, some tools (like SAMtools) don't quite like them. Comments can be turned of by setting this variable to 0. Different values increase/decrease verbosity level.
   int64_t verbose_level = 5;                // 'v', Verbose level. If equal to 0 nothing except strict output will be placed on stdout.

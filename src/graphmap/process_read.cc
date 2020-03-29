@@ -21,7 +21,7 @@
 #include "aligner/aligner_util.hpp"
 #include "aligner/pairwise_penalties.h"
 
-int GraphMap::ProcessRead(int order_number, MappingData *mapping_data, const SingleSequence *read, const ProgramParameters *parameters, const EValueParams *evalue_params, std::vector<RealignmentStructure *> *realignment_structures) {
+int GraphMap::ProcessRead(int order_number, MappingData *mapping_data, const SingleSequence *read, const ProgramParameters *parameters, const EValueParams *evalue_params, std::vector<RealignmentStructure> *realignment_structures) {
   std::vector<std::shared_ptr<is::MinimizerIndex>> &indexes = indexes_;
   std::shared_ptr<is::Transcriptome> transcriptome = transcriptome_;
 
@@ -532,8 +532,6 @@ int GraphMap::GenerateAlignments_(MappingData *mapping_data, std::shared_ptr<is:
   EvaluateMappings_(mapping_data, read, parameters);
   CollectFinalMappingsAndMapQ_(true, mapping_data, read, parameters);
 
-
-
   if (parameters->mapq_threshold >= 0 && mapping_data->mapping_quality < parameters->mapq_threshold) {
     mapping_data->unmapped_reason += FormatString("__Unmapped_because_mapq_too_low__mapq<%d", parameters->mapq_threshold);
     return 0;
@@ -687,7 +685,7 @@ std::vector<uint8_t> CigarToAlignmentArray(const std::vector<is::CigarOp> &cigar
 
 bool HackIntermediateMapping(MappingData *mapping_data, std::shared_ptr<is::MinimizerIndex> &index,
                              const SingleSequence *read, const ProgramParameters *parameters,
-                             int64_t abs_ref_id, std::shared_ptr<is::AlignmentResult> aln_result, double* score) {
+                             int64_t abs_ref_id, std::shared_ptr<is::AlignmentResult> aln_result, double* score, bool isReversedDefault = false) {
 
   int64_t reference_start = index->get_reference_starting_pos()[abs_ref_id];
   int64_t reference_length = index->get_reference_lengths()[abs_ref_id % index->get_num_sequences_forward()];
@@ -715,7 +713,7 @@ bool HackIntermediateMapping(MappingData *mapping_data, std::shared_ptr<is::Mini
   LOG_DEBUG_SPEC("abs_ref_id = %ld\n", abs_ref_id);
   AlignmentResults aln;
   aln.orientation = (abs_ref_id < index->get_num_sequences_forward()) ? kForward : kReverse;
-  aln.is_reverse = (abs_ref_id >= index->get_num_sequences_forward()) ? true : false;
+  aln.is_reverse = isReversedDefault == true ? true : ((abs_ref_id >= index->get_num_sequences_forward()) ? true : false);
   aln.ref_id = abs_ref_id % index->get_num_sequences_forward();
   aln.ref_header = index->get_headers()[abs_ref_id];
   aln.ref_len = reference_length;
@@ -751,7 +749,6 @@ bool HackIntermediateMapping(MappingData *mapping_data, std::shared_ptr<is::Mini
   /// Fill out statistics for each alignment (E-value calculation, couting of CIGAR operations, etc.) and check if the alignments are sane.
   for (int32_t i=0; i<new_entry->get_alignments().size(); i++) {
     AlignmentResults *curr_aln = &new_entry->get_alignments()[i];
-
     if (curr_aln->is_aligned == false) {
     		continue;
     }
@@ -849,7 +846,7 @@ bool HackIntermediateMapping(MappingData *mapping_data, std::shared_ptr<is::Mini
 
 }
 
-bool GraphMap::GetMappingData(RealignmentStructure* rs, std::shared_ptr<is::MinimizerIndex> index, MappingData *mapping_data, const ProgramParameters *parameters, std::vector<is::CigarOp> rez, SingleSequence* reversed) {
+bool GraphMap::GetMappingData(RealignmentStructure rs, std::shared_ptr<is::MinimizerIndex> index, MappingData *mapping_data, const ProgramParameters *parameters, std::vector<is::CigarOp> rez, SingleSequence* reversed) {
 
 	is::PiecewisePenalties p(2, -4, std::vector<is::AffinePiece>{is::AffinePiece(-2, -4), is::AffinePiece(-1, -13)});
 	is::AlignmentOptions aln_opt;
@@ -857,9 +854,9 @@ bool GraphMap::GetMappingData(RealignmentStructure* rs, std::shared_ptr<is::Mini
 	auto aligner = is::createAlignerKSW2(p, aln_opt);
 	auto anchor_aligner = is::createAnchorAligner(aligner);
 
-	auto result = anchor_aligner->CreateAlignmentResult(rs->raw_start, rs->raw_stop, rs->query_start, rs->query_end, rez);
+	auto result = anchor_aligner->CreateAlignmentResult(rs.raw_start, rs.raw_stop, rs.query_start, rs.query_end, rez);
 
-	if(rs->orientation == kReverse) {
+	if(rs.orientation == kReverse) {
 		int64_t halvening = 0;
 		for(int64_t i = 0; i < index->get_reference_lengths().size()/2; i++) {
 			int64_t len = index->get_reference_lengths()[i];
@@ -873,7 +870,7 @@ bool GraphMap::GetMappingData(RealignmentStructure* rs, std::shared_ptr<is::Mini
 		for(int64_t i = 0; i < index->get_reference_lengths().size()/2; i++) {
 			int64_t len = index->get_reference_lengths()[i];
 			if(!found_index) {
-				if(buffer_offset + len < (rs->raw_start-halvening)) {
+				if(buffer_offset + len < (rs.raw_start-halvening)) {
 					buffer_offset += len;
 				} else {
 					found_index = true;
@@ -882,20 +879,20 @@ bool GraphMap::GetMappingData(RealignmentStructure* rs, std::shared_ptr<is::Mini
 			}
 		}
 
-		int64_t new_start = buffer_offset + (index->get_reference_lengths()[desired_index] - ((rs->raw_stop - halvening) - buffer_offset));
-		int64_t new_stop = buffer_offset + (index->get_reference_lengths()[desired_index] - ((rs->raw_start - halvening) - buffer_offset));
+		int64_t new_start = buffer_offset + (index->get_reference_lengths()[desired_index] - ((rs.raw_stop - halvening) - buffer_offset));
+		int64_t new_stop = buffer_offset + (index->get_reference_lengths()[desired_index] - ((rs.raw_start - halvening) - buffer_offset));
 
-		result = anchor_aligner->CreateAlignmentResult(std::max((int64_t) 0 ,new_start), new_stop, rs->query_start, rs->query_end, rez);
+		result = anchor_aligner->CreateAlignmentResult(std::max((int64_t) 0 ,new_start), new_stop, rs.query_start, rs.query_end, rez);
 	}
 
 	double score = 0;
 
 	bool is_aligned = false;
 
-	if(rs->orientation == kReverse) {
-		is_aligned = HackIntermediateMapping(mapping_data, index, reversed, parameters, rs->ref_number, result, &score);
+	if(rs.orientation == kReverse) {
+		is_aligned = HackIntermediateMapping(mapping_data, index, reversed, parameters, rs.ref_number, result, &score, true);
 	} else {
-		is_aligned = HackIntermediateMapping(mapping_data, index, rs->sequence, parameters, rs->ref_number, result, &score);
+		is_aligned = HackIntermediateMapping(mapping_data, index, rs.sequence, parameters, rs.ref_number, result, &score);
 	}
 
 	mapping_data->final_mapping_ptrs.push_back(mapping_data->intermediate_mappings.back());
@@ -982,11 +979,11 @@ double GraphMap::RealignRead(const SingleSequence *read, std::shared_ptr<is::Min
 
 int GraphMap::RNAGenerateAlignments_(int order_number, MappingData *mapping_data, std::shared_ptr<is::MinimizerIndex> index, // @suppress("Type cannot be resolved") // @suppress("Member declaration not found")
                                      std::shared_ptr<is::Transcriptome> transcriptome, const SingleSequence *read,
-                                     const ProgramParameters *parameters, const EValueParams *evalue_params, std::vector<RealignmentStructure *> *realignment_structures) {
+                                     const ProgramParameters *parameters, const EValueParams *evalue_params, std::vector<RealignmentStructure> *realignment_structures) {
 
   if (mapping_data->intermediate_mappings.size() == 0) { // @suppress("Method cannot be resolved")
 	std::vector<CigarExon> empty_cigar;
-	RealignmentStructure *rs = new RealignmentStructure(order_number, read, NULL, -1, -10000, empty_cigar);
+	RealignmentStructure rs = RealignmentStructure(order_number, read, NULL, -1, -10000, empty_cigar);
 	#pragma omp critical
 	realignment_structures->push_back(rs);
     LogSystem::GetInstance().Log(VERBOSE_LEVEL_ALL_DEBUG, read->get_sequence_id() == parameters->debug_read, FormatString("mapping_data->intermediate_mappings.size() == 0\n"), "GenerateAlignments_");
@@ -1320,17 +1317,16 @@ int GraphMap::RNAGenerateAlignments_(int order_number, MappingData *mapping_data
 
   mapping_data->final_mapping_ptrs.clear();
   int reference_id_translated = abs_ref_id % index->get_num_sequences_forward();
-  RealignmentStructure *rs = NULL;
 
   if(tmp_entry != NULL) {
-	rs = new RealignmentStructure(order_number, read, tmp_entry, reference_id_translated, score, betterCigarExons);
+	RealignmentStructure rs = RealignmentStructure(order_number, read, tmp_entry, reference_id_translated, score, betterCigarExons);
 	#pragma omp critical
 	realignment_structures->push_back(rs);
 	mapping_data->final_mapping_ptrs.push_back(tmp_entry);
 	return 0;
   } else {
 	std::vector<CigarExon> placeholder;
-	RealignmentStructure *rs = new RealignmentStructure(order_number, read, NULL, -1, -10000, placeholder);
+	RealignmentStructure rs = RealignmentStructure(order_number, read, NULL, -1, -10000, placeholder);
 	#pragma omp critical
 	realignment_structures->push_back(rs);
 	return 1;

@@ -93,13 +93,26 @@ public:
 		cigar = _cigar;
 		isGap = _isGap;
 	}
+	CigarExon(std::vector<CigarOp> _cigar, bool _isGap) {
+		length = 0;
+		for(CigarOp cOp: _cigar) {
+			is::CigarOp isCigOp = is::CigarOp(cOp.op, cOp.count);
+			cigar.push_back(isCigOp);
+		}
+		isGap = _isGap;
+	}
+	CigarExon(std::vector<is::CigarOp> _cigar, bool _isGap) {
+		length = 0;
+		cigar = _cigar;
+		isGap = _isGap;
+	}
 	void expandGap(int value) {
 		cigar.front().count += value;
 		length = cigar.front().count;
 	}
 };
 
-class RealignmentStructure {
+struct RealignmentStructure {
 public:
 	int order_number;
 	const SingleSequence* sequence;
@@ -115,6 +128,22 @@ public:
 	std::vector<uint8_t> raw_alignment;
 	SeqOrientation orientation;
 	std::vector<CigarExon> previousCigarExons;
+
+	RealignmentStructure(int _order_number, const SingleSequence* _sequence, int64_t _ref_number, std::vector<CigarExon> _previousCigarExons, SeqOrientation orientation_, int64_t ref_start, int64_t ref_end, int64_t raw_start_, int64_t raw_stop_, int64_t query_start_, int64_t query_end_, bool isAligned_) {
+		order_number = _order_number;
+		sequence = _sequence;
+		ref_number = _ref_number;
+		score = 0;
+		previousCigarExons = _previousCigarExons;
+		orientation = orientation_;
+		start = ref_start;
+		stop = ref_end;
+		raw_start = raw_start_;
+		raw_stop = raw_stop_;
+		query_start = query_start_;
+		query_end = query_end_;
+		isAligned = isAligned_;
+	}
 
 	RealignmentStructure(int _order_number, const SingleSequence* _sequence, PathGraphEntry* _entry, int64_t _ref_number, double _score, std::vector<CigarExon> _previousCigarExons) {
 		order_number = _order_number;
@@ -225,7 +254,7 @@ class GraphMap {
   GraphMap();
   ~GraphMap();
 
-  static bool comparePtrToNode(RealignmentStructure* a, RealignmentStructure* b);
+  static bool comparePtrToNode(RealignmentStructure a, RealignmentStructure b);
 
   // Main function for running the mapping process. It generates/loads the index, and handles batch loading of sequences from the reads file.
   void Run(ProgramParameters &parameters);
@@ -233,17 +262,19 @@ class GraphMap {
   // Generates or loads the index of the reference genome.
   int BuildIndexes(ProgramParameters &parameters);
 
-  bool GetMappingData(RealignmentStructure* rs, std::shared_ptr<is::MinimizerIndex> index, MappingData *mapping_data, const ProgramParameters *parameters, std::vector<is::CigarOp> rez, SingleSequence *reversed);
+  bool GetMappingData(RealignmentStructure rs, std::shared_ptr<is::MinimizerIndex> index, MappingData *mapping_data, const ProgramParameters *parameters, std::vector<is::CigarOp> rez, SingleSequence *reversed);
 
   double RealignRead(const SingleSequence *read, std::shared_ptr<is::MinimizerIndex> index, MappingData *mapping_data, const ProgramParameters *parameters, std::string cutted_reference, ExonsCluster exonsClusters, SeqOrientation orientation, int64_t ref_number, std::vector<CigarExon> *cigarExons);
   // Loads reads from a file in batches of given size (in MiB), or all at once.
-  void ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *fp_out);
+  void ProcessReadsFromSingleFile(ProgramParameters &parameters, FILE *fp_out, FILE *fp_total_out);
+
+  void ReadRealStructs(SequenceFile &sams, std::vector<RealignmentStructure> &real_structs, ProgramParameters &parameters);
 
   // Process the loaded batch of reads. Uses OpenMP to do it in parallel. Calls ProcessOneRead for each read in the SequenceFile.
-  int ProcessSequenceFileInParallel(ProgramParameters *parameters, const SequenceFile *reads, clock_t *last_time, FILE *fp_out, int64_t *ret_num_mapped, int64_t *ret_num_unmapped);
+  int ProcessSequenceFileInParallel(ProgramParameters *parameters, const SequenceFile *reads, clock_t *last_time, FILE *fp_out, FILE * fp_total_out, int64_t *ret_num_mapped, int64_t *ret_num_unmapped);
 
   // Processes a single read from the batch of loaded reads.
-  int ProcessRead(int order_number, MappingData *mapping_data, const SingleSequence *read, const ProgramParameters *parameters, const EValueParams *evalue_params, std::vector<RealignmentStructure *> *realignment_structures);
+  int ProcessRead(int order_number, MappingData *mapping_data, const SingleSequence *read, const ProgramParameters *parameters, const EValueParams *evalue_params, std::vector<RealignmentStructure> *realignment_structures);
 
   // Collects alignments from the given mapping_data and converts them into an appropriate output format (string).
   int CollectAlignments(const SingleSequence *read, const ProgramParameters *parameters, MappingData *mapping_data, std::string &ret_aln_lines);
@@ -256,7 +287,7 @@ class GraphMap {
   int Align(std::vector<std::string> ref_seqs, std::vector<std::string> read_seqs, const ProgramParameters &parameters);
 
   std::vector<is::CigarOp> ProcessReadExons(std::vector<ExonInfo> &exonsInfos, const char *ref_data);
-  void PostprocessRNAData(std::vector<RealignmentStructure *> realignment_structures, std::vector<std::string> *sam_lines, int64_t num_threads, ProgramParameters *parameters, EValueParams *evalue_params);
+  void PostprocessRNAData(std::vector<RealignmentStructure> realignment_structures, std::vector<std::string> *sam_lines, int64_t num_threads, ProgramParameters *parameters, EValueParams *evalue_params, FILE *fp_total_out);
 
  private:
   std::vector<std::shared_ptr<is::MinimizerIndex>> indexes_;
@@ -296,7 +327,7 @@ class GraphMap {
   //
   int EvaluateMappings_(MappingData *mapping_data, const SingleSequence *read, const ProgramParameters *parameters);
   int GenerateAlignments_(MappingData *mapping_data, std::shared_ptr<is::MinimizerIndex> index, std::shared_ptr<is::Transcriptome> transcriptome, const SingleSequence *read, const ProgramParameters *parameters, const EValueParams *evalue_params);
-  int RNAGenerateAlignments_(int order_number, MappingData *mapping_data, std::shared_ptr<is::MinimizerIndex> index, std::shared_ptr<is::Transcriptome> transcriptome, const SingleSequence *read, const ProgramParameters *parameters, const EValueParams *evalue_params, std::vector<RealignmentStructure *> *realignment_structures);
+  int RNAGenerateAlignments_(int order_number, MappingData *mapping_data, std::shared_ptr<is::MinimizerIndex> index, std::shared_ptr<is::Transcriptome> transcriptome, const SingleSequence *read, const ProgramParameters *parameters, const EValueParams *evalue_params, std::vector<RealignmentStructure> *realignment_structures);
 
   // Helper functions.
   int CalculateL1ParametersWithMaximumDeviation_(ScoreRegistry *local_score, std::vector<int> &lcskpp_indices, float maximum_allowed_deviation, int64_t *ret_k, int64_t *ret_l, float *ret_sigma_L2, float *ret_confidence_L1);

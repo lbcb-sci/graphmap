@@ -20,6 +20,7 @@ int ProcessArgsGraphMap(int argc, char **argv, ProgramParameters *parameters)
 //  argparser.AddCompositeArgument("overlap", "-a anchor -w normal --overlapper --evalue 1e0 --ambiguity 0.50 --min-bin-perc 0.10 --bin-step 0.90 --max-regions -1 --mapq -1 --secondary");
   argparser.AddCompositeArgument("overlap", "-a anchor -w normal --overlapper --evalue 1e0 --ambiguity 0.50 --min-bin-perc 0.10 --bin-step 0.90 --max-regions -1 --mapq -1 --secondary");
   argparser.AddCompositeArgument("rnaseq", "--ambiguity 0.5 --secondary --min-bin-perc 0.01 --bin-step 0.99 --max-regions 20 --mapq -1 --spliced --chain-min-cov 40");
+  argparser.AddCompositeArgument("consensus", "--ambiguity 0.5 --secondary --min-bin-perc 0.01 --bin-step 0.99 --max-regions 20 --mapq -1 --spliced --chain-min-cov 40");
 
 //  argparser.AddCompositeArgument("overlap", "-a anchor -w normal --overlapper --evalue 1e0 --ambiguity 0.50 --min-bin-perc 0.10 --bin-step 0.90 --max-regions -1 --mapq -1 --secondary");
 //  argparser.AddCompositeArgument("sensitive", "-a gotoh -w sg -M 5 -X 4 -G 8 -E 6");
@@ -28,6 +29,7 @@ int ProcessArgsGraphMap(int argc, char **argv, ProgramParameters *parameters)
   argparser.AddArgument(&parameters->reference_path, VALUE_TYPE_STRING, "r", "ref", "", "Path to the reference sequence (fastq or fasta).", 0, "Input/Output options");
   argparser.AddArgument(&parameters->index_file, VALUE_TYPE_STRING, "i", "index", "", "Path to the index of the reference sequence. If not specified, index is generated in the same folder as the reference file, with .gmidx extension. For non-parsimonious mode, secondary index .gmidxsec is also generated.", 0, "Input/Output options");
   argparser.AddArgument(&parameters->reads_path, VALUE_TYPE_STRING, "d", "reads", "", "Path to the reads file.", 0, "Input/Output options");
+  argparser.AddArgument(&parameters->sams_path, VALUE_TYPE_STRING, "sam", "sams", "", "Path to the sam file.", 0, "Input/Output options");
   argparser.AddArgument(&parameters->out_sam_path, VALUE_TYPE_STRING, "o", "out", "", "Path to the output file that will be generated.", 0, "Input/Output options");
   argparser.AddArgument(&parameters->gtf_path, VALUE_TYPE_STRING, "", "gtf", "", "Path to a General Transfer Format file. If specified, a transcriptome will be built from the reference sequence and used for mapping. Output SAM alignments will be in genome space (not transcriptome).", 0, "Input/Output options");
   argparser.AddArgument(&parameters->infmt, VALUE_TYPE_STRING, "K", "in-fmt", "auto", "Format in which to input reads. Options are:\n auto  - Determines the format automatically from file extension.\n fastq - Loads FASTQ or FASTA files.\n fasta - Loads FASTQ or FASTA files.\n gfa   - Graphical Fragment Assembly format.\n sam   - Sequence Alignment/Mapping format.", 0, "Input/Output options");
