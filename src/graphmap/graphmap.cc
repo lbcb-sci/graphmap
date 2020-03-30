@@ -1369,7 +1369,7 @@ int GraphMap::ProcessSequenceFileInParallel(ProgramParameters *parameters, const
   }
 
   if (parameters->composite_parameters == "rnaseq") {
-	  PostprocessRNAData(realignment_structures, &sam_lines, num_threads, parameters, evalue_params);
+	  // PostprocessRNAData(realignment_structures, &sam_lines, num_threads, parameters, evalue_params);
   }
 
   (*ret_num_mapped) = num_mapped;
