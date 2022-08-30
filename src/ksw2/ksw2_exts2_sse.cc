@@ -3,13 +3,25 @@
 #include <assert.h>
 #include "ksw2.h"
 
-#ifdef __SSE2__
-#include <emmintrin.h>
+#ifdef __x86_64__
+  #ifdef __SSE2__
+  #include <emmintrin.h>
+  #define KSW_EXTS2_SSE_SUPPORTED 1
+  #endif // __SSE2__
 
-#ifdef __SSE4_1__
-#include <smmintrin.h>
-#endif
+  #ifdef __SSE4_1__
+  #include <smmintrin.h>
+  #endif
+#else
+  #define SSE2NEON_PRECISE_MINMAX 1
+  #define SSE2NEON_PRECISE_DIV 1
+  #define SSE2NEON_PRECISE_SQRT 1
+  #define SSE2NEON_PRECISE_DP 1
+  #include "sse2neon.h"
+  #define KSW_EXTS2_SSE_SUPPORTED 1
+#endif //__x86_64__
 
+#ifdef KSW_EXTS2_SSE_SUPPORTED
 void ksw_exts2_sse(void *km, int qlen, const uint8_t *query, int tlen, const uint8_t *target, int8_t m, const int8_t *mat,
 				   int8_t q, int8_t e, int8_t q2, int8_t noncan, int zdrop, int flag, ksw_extz_t *ez)
 {
@@ -354,4 +366,4 @@ void ksw_exts2_sse(void *km, int qlen, const uint8_t *query, int tlen, const uin
 		kfree(km, mem2); kfree(km, off);
 	}
 }
-#endif // __SSE2__
+#endif // KSW_EXTS2_SSE_SUPPORTED

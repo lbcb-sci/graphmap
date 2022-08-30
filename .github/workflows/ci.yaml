@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        submodules: true
+
+    - name: Make
+      run:  make
+
+  build-aarch64:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        submodules: true
+
+    - name: Make
+      uses: uraimo/run-on-arch-action@v2
+      with:
+        arch: aarch64
+        distro: ubuntu20.04
+        githubToken: ${{ github.token }}
+        dockerRunArgs: |
+          --volume "${PWD}:/graphmap2" 
+        install: |
+          apt-get update -q -y
+          apt-get install -q -y make gcc g++ zlib1g-dev
+        run: |
+          cd /graphmap2
+          make

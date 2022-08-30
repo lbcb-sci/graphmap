@@ -1,8 +1,18 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <emmintrin.h>
 #include "ksw2.h"
+
+#ifdef __x86_64__
+  #include <emmintrin.h>
+
+#else
+  #define SSE2NEON_PRECISE_MINMAX 1
+  #define SSE2NEON_PRECISE_DIV 1
+  #define SSE2NEON_PRECISE_SQRT 1
+  #define SSE2NEON_PRECISE_DP 1
+  #include "sse2neon.h"
+#endif //__x86_64__
 
 #ifdef __GNUC__
 #define LIKELY(x) __builtin_expect((x),1)
@@ -10,7 +20,7 @@
 #else
 #define LIKELY(x) (x)
 #define UNLIKELY(x) (x)
-#endif
+#endif // __GNUC__
 
 typedef struct {
 	int qlen, slen;
